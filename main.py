@@ -5,12 +5,14 @@ from enum import Enum
 
 # from __future__ import print_function  # Python 2/3 compatibility
 import cv2
-import numpy as npss
+import numpy as np
 import sys
+import time
 
 """ sources
 - https://automaticaddison.com/how-to-detect-aruco-markers-using-opencv-and-python/
 - https://www.pyimagesearch.com/2020/12/21/detecting-aruco-markers-with-opencv-and-python/
+- https://github.com/davidshttintin/EEC128Tello/blob/main/main.py
 """
 
 # https://stackoverflow.com/questions/72372154/how-to-make-stream-from-tello-sdk-2-0-captured-by-opencv-with-cv2-videocapture
@@ -42,7 +44,8 @@ ARUCO_DICT = {
 ARUCO_MOVEMENT_DICT = {
     13: tello.move_forward,
     26: tello.move_left,
-    39: tello.move_right
+    39: tello.move_right,
+    23: tello.move_back
 
 }
 
@@ -60,14 +63,21 @@ class Direction(Enum):
 # tello initialize connection and query battery level
 tello.connect()
 print(tello.query_battery())
-# print(tello.get_temperature())
 
 # takeoff
 tello.takeoff()
-tello.move_up(30)
 
-# start video streaming
+# # start video streaming
 tello.streamon()
+
+marker_size = 10
+camera_matrix = np.array([[921.170702, 0.000000, 459.904354],
+                          [0.000000, 919.018377, 351.238301],
+                          [0.000000, 0.000000, 1.000000]])
+
+distortion = np.array([-0.033458, 0.105152, 0.001256, -0.006647, 0.000000])
+
+INDEX = 39
 
 def main():
     # Check that we have a valid ArUco marker
@@ -80,20 +90,22 @@ def main():
     parameters = cv2.aruco.DetectorParameters()
     detector = cv2.aruco.ArucoDetector(dictionary, parameters)
 
+    cam = cv2.VideoCapture(0)
+    i = 0
     while True:
         frame = tello.get_frame_read().frame
-
+        height, width, layers = frame.shape
+        i += 1
         # Detect ArUco markers in the video frame
         (corners, ids, rejected) = detector.detectMarkers(frame)
 
         # Check that at least one ArUco marker was detected
-        if len(corners) > 0:
+        if corners is not None and len(corners) > 0:
             ids = ids.flatten()
             for (marker_corner, marker_id) in zip(corners, ids):
-
                 # # Extract the marker corners
-                corners = marker_corner.reshape((4, 2))
-                (top_left, top_right, bottom_right, bottom_left) = corners
+                corners_r = marker_corner.reshape((4, 2))
+                (top_left, top_right, bottom_right, bottom_left) = corners_r
 
                 # Convert the (x,y) coordinate pairs to integers
                 top_right = (int(top_right[0]), int(top_right[1]))
@@ -119,13 +131,52 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0, 255, 0), 2)
                 
-                # perform movement
-                if (marker_id in ARUCO_MOVEMENT_DICT.keys()):
-                    ARUCO_MOVEMENT_DICT[marker_id](30)
-                
+            cv2.imshow('frame', frame)
 
-        cv2.imshow('frame', frame)
+
+            if np.all(ids is not None):  # If there are markers found by detector
+                # Estimate pose of each marker and return the values rvec and tvec---different from camera coefficients
+                idx = np.where(ids == INDEX)
+                if len(idx[0]):
+                
+                    idx = idx[0][0]
+                    print("ID = ", ids[idx])
+                    
+                    print(corners)
+                    ret = cv2.aruco.estimatePoseSingleMarkers(corners[idx], marker_size, camera_matrix, distortion)
+
+                    center = np.mean(corners[0][0], axis=0)
+                    xerror = width/2 - center[0]
+                    yerror = height/2 - center[1]
+                    rvec, tvec = ret[0][0,0,:], ret[1][0,0,:]
+
+
+                    # Collecting Data:
+                    dist = np.sqrt(tvec[0] ** 2 + tvec[1] ** 2 + (tvec[2]) ** 2)
+                    disterror = dist - 150
+
+                    # empirycznie (po inżyniersku) dobrane nastawy (Ziegler Nichols nie zadziałał, a Nyquista nie ma bo modelu nie ma)
+                    kpx = 0.1
+                    kpy = 0.1
+                    kpz = 0.4
+
+                    control_LR = -1 * kpx * xerror
+                    control_FB = kpz * disterror
+                    control_UD = kpy * yerror
+                    control_LR = int(np.clip(control_LR,-100,100))
+                    control_FB = int(np.clip(control_FB,-100,100))
+                    control_UD = int(np.clip(control_UD,-100,100))
+
+                    print("Control_LR: ", control_LR)
+                    print("Control_FB: ", control_FB)
+                    print("Control_UD: ", control_UD)
+
+
+                    if tello.send_rc_control:
+                        tello.send_rc_control(control_LR, control_FB, control_UD, 0)
+                
         if cv2.waitKey(1) & 0xFF == ord('q'):
+            cv2.destroyAllWindows()
             break
 
     cv2.destroyAllWindows()
