@@ -155,7 +155,6 @@ def main():
                     dist = np.sqrt(tvec[0] ** 2 + tvec[1] ** 2 + (tvec[2]) ** 2)
                     disterror = dist - 150
 
-                    # empirycznie (po inżyniersku) dobrane nastawy (Ziegler Nichols nie zadziałał, a Nyquista nie ma bo modelu nie ma)
                     kpx = 0.1
                     kpy = 0.1
                     kpz = 0.4
